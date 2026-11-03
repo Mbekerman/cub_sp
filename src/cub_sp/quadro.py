@@ -92,29 +92,33 @@ def quadro_das_palavras(palavras: list[dict], pagina: int = 0) -> Quadro:
     """Monta o quadro a partir das palavras (dicts de pdfplumber: text, x0, x1, top)."""
     linhas = _linhas(palavras)
 
-    indice_titulo = referencia = None
-    for i, linha in enumerate(linhas):
-        texto = " ".join(p["text"] for p in linha)
-        if _RE_TITULO.search(chave(texto)):
-            indice_titulo = i
-            referencia = mes_referencia(texto) or (
-                mes_referencia(" ".join(p["text"] for p in linhas[i + 1])) if i + 1 < len(linhas) else None
-            )
-            break
-    if indice_titulo is None:
+    # O boletim tem mais de um quadro com título parecido (por exemplo o do padrão R8-N, que
+    # detalha mão de obra e material). O quadro certo é o que tem "Padrão Baixo / Normal / Alto"
+    # logo abaixo do título.
+    titulos = [i for i, linha in enumerate(linhas) if _RE_TITULO.search(chave(" ".join(p["text"] for p in linha)))]
+    if not titulos:
         raise QuadroNaoEncontrado("título do quadro não está nas palavras da página")
-    if referencia is None:
-        raise QuadroNaoEncontrado("título do quadro sem mês e ano reconhecíveis")
 
+    referencia = None
     colunas: dict[str, float] = {}
     indice_cabecalho = None
-    for i in range(indice_titulo + 1, min(indice_titulo + 6, len(linhas))):
-        achados = {chave(p["text"]): _centro(p) for p in linhas[i] if chave(p["text"]) in PADROES}
-        if len(achados) == 3:
-            colunas, indice_cabecalho = achados, i
-            break
+    for indice_titulo in titulos:
+        for i in range(indice_titulo + 1, min(indice_titulo + 6, len(linhas))):
+            achados = {chave(p["text"]): _centro(p) for p in linhas[i] if chave(p["text"]) in PADROES}
+            if len(achados) == 3:
+                colunas, indice_cabecalho = achados, i
+                break
+        if indice_cabecalho is None:
+            continue
+        texto_titulo = " ".join(p["text"] for p in linhas[indice_titulo])
+        referencia = mes_referencia(texto_titulo)
+        if referencia is None and indice_titulo + 1 < len(linhas):
+            referencia = mes_referencia(" ".join(p["text"] for p in linhas[indice_titulo + 1]))
+        break
     if indice_cabecalho is None:
-        raise QuadroNaoEncontrado("cabeçalho 'Padrão Baixo / Normal / Alto' não encontrado abaixo do título")
+        raise QuadroNaoEncontrado("cabeçalho 'Padrão Baixo / Normal / Alto' não encontrado abaixo de nenhum título")
+    if referencia is None:
+        raise QuadroNaoEncontrado("título do quadro sem mês e ano reconhecíveis")
 
     valores: dict[tuple[str, str], Valor] = {}
     for linha in linhas[indice_cabecalho + 1:]:

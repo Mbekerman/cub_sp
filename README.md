@@ -1,9 +1,8 @@
 # CUB-SP
 
-Monitor do **CUB/m² do Estado de São Paulo**. Todo dia ele abre a página
-[sindusconsp.com.br/servicos/cub](https://sindusconsp.com.br/servicos/cub/), baixa o PDF do
-**Boletim Econômico sem desoneração** de cada mês que ainda não está gravado, lê o quadro
-"Custo unitário básico no Estado de São Paulo" e grava os 11 valores no Supabase
+Monitor do **CUB/m² do Estado de São Paulo**. Todo dia ele procura no site do Sinduscon-SP o
+**Boletim Econômico sem desoneração** de cada mês que ainda não está gravado, baixa o PDF, lê o
+quadro "Custo unitário básico no Estado de São Paulo" e grava os 11 valores no Supabase
 (projeto BKM_Desenvolvimento_Imobiliario).
 
 | Padrão | Tipos                  |
@@ -31,14 +30,19 @@ cp .env.example .env   # preencha SUPABASE_SERVICE_ROLE_KEY
 ```
 
 ```bash
-cub-sp listar                                   # mostra os boletins achados na página
+cub-sp listar                                   # quais dos últimos 12 meses têm boletim publicado
+cub-sp listar --desde 2025-06                   # idem, a partir de um mês
 cub-sp coletar --dry-run                        # lê o que falta, só imprime
 cub-sp coletar                                  # grava os meses que ainda não estão no banco
 cub-sp coletar --mes 2026-10                    # só um mês
-cub-sp coletar --todos                          # regrava todos os meses da página
+cub-sp coletar --desde 2025-06                  # carga inicial a partir de um mês
+cub-sp coletar --desde 2025-06 --todos          # regrava também os já gravados
 cub-sp coletar --url https://.../boletim.pdf    # PDF direto
 cub-sp coletar --arquivo boletim.pdf --dry-run  # PDF local, sem rede
 ```
+
+Sem `--mes` nem `--desde`, `coletar` continua do mês seguinte ao último gravado até o mês atual.
+Com o banco vazio, busca os últimos 12 meses.
 
 A CLI lê `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` do ambiente (ou de um `.env` carregado
 pelo shell). Os PDFs baixados ficam em `CUB_PASTA_PDFS` (padrão `./dados`).
@@ -70,5 +74,20 @@ título como âncora de coluna. Cada palavra das linhas seguintes vai para a col
 dentro da coluna, a sequência `tipo, custo, variação` vira um valor. A leitura só é aceita se
 as 11 combinações aparecerem, sem sobras.
 
-Se o Sinduscon-SP mudar o desenho do quadro, o lugar de ajustar é esse arquivo. Se mudar a
-página de listagem, é `cub_sp/site.py` (`cub-sp listar` mostra o que ele está achando).
+O boletim tem outro quadro com título quase igual (o do padrão R8-N, que abre mão de obra e
+material); o leitor testa cada título e fica com o que tem os três blocos abaixo. Validado nos
+17 boletins de junho de 2025 a outubro de 2026.
+
+## Como o boletim é achado no site
+
+A página [sindusconsp.com.br/servicos/cub](https://sindusconsp.com.br/servicos/cub/) monta a
+lista de arquivos por JavaScript (WordPress Download Manager) e o Cloudflare barra as chamadas
+AJAX feitas fora do navegador. Mas cada arquivo tem página própria com endereço previsível:
+
+```
+https://sindusconsp.com.br/download/boletim-economico-<mês>-<ano>-sem-desoneracao/
+```
+
+Exemplo: `boletim-economico-outubro-2026-sem-desoneracao`. Essa página tem o link de download
+(`?wpdmdl=<id>...`), e um mês ainda não publicado responde 404. `cub_sp/site.py` faz só isso.
+Se o Sinduscon-SP mudar o padrão do endereço, é ali que se ajusta.

@@ -1,83 +1,96 @@
-"""Localiza, na página do Sinduscon-SP, o PDF do boletim econômico "sem desoneração" de cada mês."""
+"""Localiza no site do Sinduscon-SP o PDF do boletim econômico "sem desoneração" de um mês.
+
+A página de serviços do CUB monta a lista de arquivos por JavaScript (WordPress Download Manager),
+mas cada arquivo tem uma página própria com endereço previsível:
+
+    https://sindusconsp.com.br/download/boletim-economico-<mês>-<ano>-sem-desoneracao/
+
+Essa página traz o link de download (`?wpdmdl=<id>...`). Um mês que ainda não saiu responde 404.
+"""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-from urllib.parse import unquote, urljoin
+from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
-from .normaliza import chave, mes_referencia
+from .normaliza import MESES
 
 URL_CUB = "https://sindusconsp.com.br/servicos/cub/"
+URL_PACOTE = "https://sindusconsp.com.br/download/boletim-economico-{mes}-{ano}-sem-desoneracao/"
 CABECALHOS = {"User-Agent": "Mozilla/5.0 (compatible; cub-sp-monitor/0.1; +https://github.com/Mbekerman/cub_sp)"}
 TEMPO_LIMITE = 60
 
 log = logging.getLogger(__name__)
+
+_NOME_MES = {numero: nome for nome, numero in MESES.items()}
 
 
 @dataclass(frozen=True)
 class Boletim:
     referencia: date
     url: str
-    texto: str
+    titulo: str
 
 
-def baixar_pagina(url: str = URL_CUB) -> str:
+@dataclass(frozen=True)
+class Pagina:
+    status: int
+    html: str
+
+
+def baixar_pagina(url: str) -> Pagina:
     resposta = requests.get(url, headers=CABECALHOS, timeout=TEMPO_LIMITE)
-    resposta.raise_for_status()
-    return resposta.text
+    if resposta.status_code not in (200, 404):
+        resposta.raise_for_status()
+    return Pagina(resposta.status_code, resposta.text)
 
 
-def _contexto(a: Tag, niveis: int = 2) -> str:
-    """Texto do link mais o dos elementos em volta (li, tr, p...), onde costuma estar o mês ou o 'sem desoneração'."""
-    partes = [a.get_text(" ", strip=True), unquote(a.get("href", ""))]
-    pai = a.parent
-    for _ in range(niveis):
-        if not isinstance(pai, Tag):
-            break
-        partes.append(pai.get_text(" ", strip=True))
-        pai = pai.parent
-    return chave(" ".join(partes))
+def url_pacote(referencia: date) -> str:
+    return URL_PACOTE.format(mes=_NOME_MES[referencia.month], ano=referencia.year)
 
 
-def listar_boletins(html: str, base: str = URL_CUB) -> list[Boletim]:
-    """Todos os PDFs 'sem desoneração' com mês identificável, do mais recente ao mais antigo.
-
-    Se a página não rotula nada como 'sem desoneração', cai para os PDFs com 'boletim' no contexto
-    que não sejam 'com desoneração'. Um mês que apareça mais de uma vez fica com o primeiro link.
-    """
+def boletim_da_pagina(referencia: date, html: str, base: str) -> Boletim | None:
+    """Acha o link de download (`wpdmdl`) na página do pacote. None se a página não tem o link."""
     soup = BeautifulSoup(html, "html.parser")
-    candidatos: list[tuple[str, str, str]] = []
     for a in soup.find_all("a", href=True):
-        href = urljoin(base, a["href"].strip())
-        if not href.split("?", 1)[0].lower().endswith(".pdf"):
-            continue
-        candidatos.append((href, a.get_text(" ", strip=True), _contexto(a)))
+        href = a["href"]
+        if "wpdmdl=" in href:
+            titulo = soup.title.get_text(" ", strip=True).split("|")[0].strip() if soup.title else ""
+            return Boletim(referencia, urljoin(base, href), titulo)
+    return None
 
-    sem = [c for c in candidatos if "sem desonera" in c[2]]
-    if sem:
-        escolhidos = sem
-    else:
-        escolhidos = [c for c in candidatos if "boletim" in c[2] and "com desonera" not in c[2]]
-        if escolhidos:
-            log.warning("nenhum link marcado 'sem desoneração'; usando %d PDFs com 'boletim' no contexto", len(escolhidos))
 
-    por_mes: dict[date, Boletim] = {}
-    for href, texto, contexto in escolhidos:
-        ref = mes_referencia(contexto)
-        if ref is None:
-            log.debug("PDF sem mês identificável, ignorado: %s", href)
-            continue
-        por_mes.setdefault(ref, Boletim(ref, href, texto))
-    return [por_mes[k] for k in sorted(por_mes, reverse=True)]
+def localizar_boletim(referencia: date, baixar: Callable[[str], Pagina] = baixar_pagina) -> Boletim | None:
+    """Boletim do mês, ou None se o Sinduscon-SP ainda não publicou (404) ou a página veio sem link."""
+    url = url_pacote(referencia)
+    pagina = baixar(url)
+    if pagina.status == 404:
+        log.debug("%s ainda não publicado (%s)", referencia.strftime("%m/%Y"), url)
+        return None
+    boletim = boletim_da_pagina(referencia, pagina.html, url)
+    if boletim is None:
+        log.warning("página de %s existe mas não tem link de download: %s", referencia.strftime("%m/%Y"), url)
+    return boletim
+
+
+def meses(desde: date, ate: date) -> list[date]:
+    """Dia 1 de cada mês de `desde` até `ate`, do mais recente ao mais antigo."""
+    saida = []
+    ano, mes = ate.year, ate.month
+    while (ano, mes) >= (desde.year, desde.month):
+        saida.append(date(ano, mes, 1))
+        ano, mes = (ano - 1, 12) if mes == 1 else (ano, mes - 1)
+    return saida
 
 
 def baixar_pdf(url: str) -> bytes:
-    resposta = requests.get(url, headers=CABECALHOS, timeout=TEMPO_LIMITE)
+    resposta = requests.get(url, headers=CABECALHOS, timeout=TEMPO_LIMITE * 2)
     resposta.raise_for_status()
     conteudo = resposta.content
     if not conteudo.startswith(b"%PDF"):

@@ -14,11 +14,23 @@ from . import site
 from .quadro import Quadro, QuadroNaoEncontrado, extrair_quadro
 
 log = logging.getLogger("cub_sp")
+MESES_INICIAIS = 12  # quantos meses buscar quando o banco está vazio
 
 
 def _mes(texto: str) -> date:
     ano, mes = texto.split("-")
     return date(int(ano), int(mes), 1)
+
+
+def _mes_atual() -> date:
+    return date.today().replace(day=1)
+
+
+def _meses_atras(referencia: date, n: int) -> date:
+    ano, mes = referencia.year, referencia.month - n
+    while mes <= 0:
+        ano, mes = ano - 1, mes + 12
+    return date(ano, mes, 1)
 
 
 def _pasta_pdfs() -> Path:
@@ -34,13 +46,16 @@ def _imprimir(quadro: Quadro, url: str) -> None:
 
 
 def cmd_listar(args: argparse.Namespace) -> int:
-    boletins = site.listar_boletins(site.baixar_pagina(args.pagina), args.pagina)
-    if not boletins:
-        print("nenhum boletim 'sem desoneração' encontrado na página", file=sys.stderr)
-        return 1
-    for b in boletins:
-        print(f"{b.referencia:%m/%Y}  {b.url}  [{b.texto}]")
-    return 0
+    desde = args.desde or _meses_atras(_mes_atual(), args.meses - 1)
+    achados = 0
+    for referencia in site.meses(desde, _mes_atual()):
+        boletim = site.localizar_boletim(referencia)
+        if boletim:
+            achados += 1
+            print(f"{referencia:%m/%Y}  {boletim.url}  [{boletim.titulo}]")
+        else:
+            print(f"{referencia:%m/%Y}  (não publicado)")
+    return 0 if achados else 1
 
 
 def cmd_coletar(args: argparse.Namespace) -> int:
@@ -51,25 +66,17 @@ def cmd_coletar(args: argparse.Namespace) -> int:
         banco = Banco()
 
     if args.arquivo:
-        quadro = extrair_quadro(Path(args.arquivo).read_bytes())
         conteudo = Path(args.arquivo).read_bytes()
+        quadro = extrair_quadro(conteudo)
         return _gravar(banco, quadro, f"file://{Path(args.arquivo).resolve()}", conteudo, args.dry_run)
 
     if args.url:
-        alvos = [site.Boletim(args.mes or date.today().replace(day=1), args.url, "url informada")]
+        alvos = [site.Boletim(args.mes or _mes_atual(), args.url, "url informada")]
     else:
-        alvos = site.listar_boletins(site.baixar_pagina(args.pagina), args.pagina)
-        if args.mes:
-            alvos = [b for b in alvos if b.referencia == args.mes]
-            if not alvos:
-                print(f"mês {args.mes:%m/%Y} não está na página", file=sys.stderr)
-                return 1
-        elif not args.todos:
-            ja = banco.referencias_extraidas() if banco else set()
-            alvos = [b for b in alvos if b.referencia not in ja]
-            if not alvos:
-                log.info("nada novo: todos os meses da página já estão gravados")
-                return 0
+        alvos = _alvos(args, banco)
+        if not alvos:
+            log.info("nada a fazer")
+            return 0
 
     falhas = 0
     for b in alvos:
@@ -91,6 +98,39 @@ def cmd_coletar(args: argparse.Namespace) -> int:
     return 1 if falhas else 0
 
 
+def _alvos(args: argparse.Namespace, banco) -> list[site.Boletim]:
+    """Quais meses baixar: um mês pedido, ou os publicados entre `desde` e o mês atual que faltam no banco."""
+    if args.mes:
+        boletim = site.localizar_boletim(args.mes)
+        if boletim is None:
+            print(f"boletim de {args.mes:%m/%Y} não publicado", file=sys.stderr)
+            return []
+        return [boletim]
+
+    gravados = banco.referencias_extraidas() if banco else set()
+    if args.desde:
+        desde = args.desde
+    elif gravados:
+        desde = max(gravados) if args.todos else _proximo_mes(max(gravados))
+    else:
+        desde = _meses_atras(_mes_atual(), MESES_INICIAIS - 1)
+
+    alvos = []
+    for referencia in site.meses(desde, _mes_atual()):
+        if referencia in gravados and not args.todos:
+            continue
+        boletim = site.localizar_boletim(referencia)
+        if boletim is None:
+            log.info("%s ainda não publicado", referencia.strftime("%m/%Y"))
+            continue
+        alvos.append(boletim)
+    return alvos
+
+
+def _proximo_mes(referencia: date) -> date:
+    return date(referencia.year + (referencia.month == 12), referencia.month % 12 + 1, 1)
+
+
 def _gravar(banco, quadro: Quadro, url: str, conteudo: bytes, dry_run: bool) -> int:
     sha = hashlib.sha256(conteudo).hexdigest()
     caminho = _pasta_pdfs() / f"cub-sp-{quadro.referencia:%Y-%m}.pdf"
@@ -109,15 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="comando", required=True)
 
-    p_listar = sub.add_parser("listar", help="mostra os boletins 'sem desoneração' achados na página")
-    p_listar.add_argument("--pagina", default=site.URL_CUB)
+    p_listar = sub.add_parser("listar", help="mostra quais meses têm boletim 'sem desoneração' publicado")
+    p_listar.add_argument("--desde", type=_mes, help="primeiro mês a verificar, AAAA-MM")
+    p_listar.add_argument("--meses", type=int, default=MESES_INICIAIS, help="quantos meses para trás (padrão 12)")
     p_listar.set_defaults(func=cmd_listar)
 
-    p_coletar = sub.add_parser("coletar", help="baixa os boletins, lê o quadro e grava no Supabase")
-    p_coletar.add_argument("--pagina", default=site.URL_CUB)
-    p_coletar.add_argument("--mes", type=_mes, help="só este mês, no formato AAAA-MM")
-    p_coletar.add_argument("--todos", action="store_true", help="regrava todos os meses da página")
-    p_coletar.add_argument("--url", help="PDF direto, sem passar pela página")
+    p_coletar = sub.add_parser("coletar", help="baixa os boletins que faltam, lê o quadro e grava no Supabase")
+    p_coletar.add_argument("--mes", type=_mes, help="só este mês, AAAA-MM")
+    p_coletar.add_argument("--desde", type=_mes, help="começa neste mês em vez de continuar de onde parou, AAAA-MM")
+    p_coletar.add_argument("--todos", action="store_true", help="regrava também os meses já gravados")
+    p_coletar.add_argument("--url", help="PDF direto, sem procurar a página do mês")
     p_coletar.add_argument("--arquivo", help="PDF local, sem rede")
     p_coletar.add_argument("--dry-run", action="store_true", help="só mostra os valores, não grava")
     p_coletar.set_defaults(func=cmd_coletar)
