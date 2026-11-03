@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 
 from supabase import Client, create_client
 
@@ -33,6 +33,7 @@ class Banco:
             "situacao": "extraido",
             "erro": None,
             "valores": len(quadro.valores),
+            "baixado_em": _agora(),
         }
         resposta = self.cliente.table("cub_boletins").upsert(boletim, on_conflict="referencia").execute()
         boletim_id = resposta.data[0]["id"]
@@ -44,6 +45,7 @@ class Banco:
                 "tipo": v.tipo,
                 "custo_m2": str(v.custo_m2),
                 "variacao_mes": str(v.variacao_mes),
+                "extraido_em": _agora(),
             }
             for v in quadro.valores
         ]
@@ -63,5 +65,11 @@ class Banco:
             "sha256": sha256,
             "situacao": "falhou",
             "erro": erro[:2000],
+            "baixado_em": _agora(),
         }
         self.cliente.table("cub_boletins").upsert(boletim, on_conflict="referencia").execute()
+
+
+def _agora() -> str:
+    """Carimbo explícito: o upsert não reaplica os defaults do banco ao regravar."""
+    return datetime.now(timezone.utc).isoformat()
