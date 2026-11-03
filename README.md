@@ -50,12 +50,33 @@ pelo shell). Os PDFs baixados ficam em `CUB_PASTA_PDFS` (padrão `./dados`).
 Rodar de novo o mesmo mês sobrescreve os valores; nada é apagado. Um mês que falhe na leitura
 fica marcado como `falhou` com o erro, e volta a ser tentado na próxima rodada.
 
-## Deploy no Railway
+## Deploy no Google Cloud Run
 
-`railway.json` configura o serviço como **cron diário às 12:00 UTC (09:00 em Brasília)**, rodando
-`cub-sp coletar` e encerrando. Variáveis necessárias no serviço: `SUPABASE_URL` e
-`SUPABASE_SERVICE_ROLE_KEY`. O boletim costuma sair na primeira quinzena; nos dias em que não
-há mês novo o comando termina sem gravar nada.
+O monitor roda como **Cloud Run Job** disparado todo dia pelo **Cloud Scheduler**. O script
+`deploy/cloud-run.sh` faz tudo com o `gcloud`: habilita as APIs, cria o repositório de imagens,
+a conta de serviço, constrói a imagem com o Cloud Build, cria ou atualiza o job e o agendamento.
+
+1. Guarde a chave `service_role` do Supabase no Secret Manager, uma vez:
+
+   ```bash
+   printf '%s' 'sb_secret_...' | gcloud secrets create cub-sp-supabase-key --data-file=- --project SEU_PROJETO
+   ```
+
+2. Publique:
+
+   ```bash
+   PROJECT_ID=SEU_PROJETO ./deploy/cloud-run.sh
+   ```
+
+3. Rode uma vez à mão para conferir:
+
+   ```bash
+   gcloud run jobs execute cub-sp --region southamerica-east1 --wait
+   ```
+
+O agendamento padrão é 09:00 de São Paulo, todo dia. O boletim costuma sair na primeira quinzena;
+nos dias sem mês novo o job termina em segundos sem gravar nada. Os PDFs ficam em `/tmp` dentro do
+container e são descartados ao fim; o que importa está no banco.
 
 ## Testes
 
