@@ -134,8 +134,7 @@ def _proximo_mes(referencia: date) -> date:
 def _gravar(banco, quadro: Quadro, url: str, conteudo: bytes, dry_run: bool) -> int:
     sha = hashlib.sha256(conteudo).hexdigest()
     caminho = _pasta_pdfs() / f"cub-sp-{quadro.referencia:%Y-%m}.pdf"
-    if not caminho.exists():
-        caminho.write_bytes(conteudo)
+    caminho.write_bytes(conteudo)  # sempre o último baixado, para o arquivo bater com o sha256 gravado
     _imprimir(quadro, url)
     if dry_run:
         return 0
