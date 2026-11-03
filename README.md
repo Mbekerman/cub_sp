@@ -50,6 +50,14 @@ pelo shell). Os PDFs baixados ficam em `CUB_PASTA_PDFS` (padrão `./dados`).
 Rodar de novo o mesmo mês sobrescreve os valores; nada é apagado. Um mês que falhe na leitura
 fica marcado como `falhou` com o erro, e volta a ser tentado na próxima rodada.
 
+## Página do histórico
+
+`web/index.html` é uma página estática, sem build, que lê `cub_valores` direto da API do Supabase
+com a chave pública (publishable) e mostra a tabela: meses nas linhas, as 11 séries nas colunas,
+com alternância entre custo por m² e variação no mês. Basta abrir o arquivo no navegador ou
+hospedá-lo em qualquer lugar que sirva HTML. A leitura anônima é liberada pela migração
+`cub_leitura_publica`, só nas tabelas `cub_*`.
+
 ## Deploy no Google Cloud Run
 
 O monitor roda como **Cloud Run Job** disparado todo dia pelo **Cloud Scheduler**. O script
